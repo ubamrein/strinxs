@@ -1,0 +1,10 @@
+[package]
+name = "strinxs"
+version = "0.1.0"
+authors = ["Patrick Amrein <amrein@ubique.ch>"]
+edition = "2018"
+
+[dependencies]
+leb128 = "*"
+regex = "1"
+zip = "0.5"
