@@ -6,6 +6,7 @@ use leb128;
 use regex::Regex;
 use zip::ZipArchive;
 use std::io;
+use std::collections::HashMap;
 
 fn parseDex<R: Read>(mut f : R, reg : &str) {
     let mut buffer : Vec<u8> = vec![];
@@ -35,7 +36,7 @@ fn parseDex<R: Read>(mut f : R, reg : &str) {
     let mut file_contents = buffer;
     //f.read_to_end(&mut file_contents).expect("Could not read file");
     
-    
+    let mut match_table = HashMap::new();
 
     let mut i = 0;
     let mut offset =  config.string_ids_off as isize;
@@ -68,6 +69,18 @@ fn parseDex<R: Read>(mut f : R, reg : &str) {
         if se.utf16_size > 0 {
             //println!("found {} long string: {} at offset {}, leb was {} bytes", se.utf16_size, std::str::from_utf8(&se.dat).unwrap_or(""), entry, lebbytes);
         }
+
+        if reg != "" {
+            let re = Regex::new(reg).unwrap();
+            if se.utf16_size > 0 {
+                let the_string = std::str::from_utf8(&se.dat).unwrap_or("");
+                if re.is_match(the_string) {
+                   // println!("Found match: {}", the_string);
+                   let m = Match { value : String::from(the_string) , origin : StringType::UTF8String  };
+                   match_table.insert(strings.len(), m);
+                }
+            }
+        }
         strings.push(se);
     }
    
@@ -79,9 +92,13 @@ fn parseDex<R: Read>(mut f : R, reg : &str) {
        fill_type_from_raw_pointer(&mut index, &file_contents[offset as usize]);
        let the_type = std::str::from_utf8(&strings[index as usize].dat).expect("type should be there");
        types.push(the_type);
-      // println!("found type {}", the_type);
        offset += 4;
        i += 1;
+
+       //see if index is in hashmap
+       if let Some(entry) = match_table.get_mut(&(index as usize)){
+           entry.origin = StringType::Type;
+       }
    }
 
    offset = config.proto_ids_off as isize;
@@ -103,23 +120,49 @@ fn parseDex<R: Read>(mut f : R, reg : &str) {
        let mut method : Method = unsafe {std::mem::zeroed()};
        fill_type_from_raw_pointer(&mut method, &file_contents[offset as usize]);
        //println!("Found method: {}", method.get_description(&types,&strings, &protos));
+        if let Some(val) = match_table.get_mut(&(method.name_idx as usize)) {
+            val.origin = StringType::Method;
+        }
         methods.push(method);
-
         i += 1;
         offset += std::mem::size_of::<Method>() as isize;
    }
 
-    if reg != "" {
-        let re = Regex::new(reg).unwrap();
-        for string in strings {
-            if string.utf16_size > 0 {
-                let the_string = std::str::from_utf8(&string.dat).unwrap_or("");
-                if re.is_match(the_string) {
-                    println!("Found match: {}", the_string);
-                }
+    for m in match_table {
+        println!("Found Match ({}): {}", m.1.origin.to_string(), m.1.value);
+    }
+}
+
+
+enum StringType {
+    Unknown,
+    Method,
+    Type,
+    UTF8String
+}
+
+impl ToString for StringType {
+    fn to_string(&self) -> String {
+        match self {
+            StringType::Unknown => {
+                String::from("Unknown")
+            },
+            StringType::Method => {
+                String::from("Method")
+            },
+            StringType::Type => {
+                String::from("Type")
+            },
+            StringType::UTF8String => {
+                String::from("UTF8String")
             }
         }
     }
+}
+
+struct Match {
+    value : String,
+    origin : StringType
 }
 
 fn extract_zip(mut f : File, reg : &str) {
