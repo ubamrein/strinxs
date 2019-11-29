@@ -1,6 +1,7 @@
 use std::slice::Iter;
 use std::fs::File;
 use std::io::Read;
+use std::io::Write;
 use std::mem;
 use leb128;
 use regex::Regex;
@@ -8,10 +9,14 @@ use zip::ZipArchive;
 use std::io;
 use std::collections::HashMap;
 
-fn parseDex<R: Read>(mut f : R, reg : &str) {
+fn parseDex<R: Read>(mut f : R, reg : &str){
     let mut buffer : Vec<u8> = vec![];
-    f.read_to_end(&mut buffer).expect("Could not read into buffer");
+    f.read_to_end(&mut buffer);
+    parseDexBuf(buffer, reg);
+}
 
+fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
+    
     let mut config: DexHeader = unsafe { mem::zeroed() };
     
     fill_type_from_raw_pointer(&mut config, &buffer[0]);
@@ -167,19 +172,21 @@ struct Match {
 
 fn extract_zip(mut f : File, reg : &str) {
     let mut archive = ZipArchive::new(f).expect("Expected a zip file");
-        for i in 0..archive.len() {
-            let mut file = archive.by_index(i).expect("Error Accessing file");
-            if file.name().contains(".dex") {
-                println!("\n\n-------\n\nFound DEX {}", file.name());
-                parseDex(file, reg); 
-            } else if file.name().contains(".apk") {
-                println!("\n\n--------\n\nfound APK in apk -> extract it ({})", file.name());
-                let mut outfile = std::fs::File::create("tmp.zip").unwrap();
-                io::copy(&mut file, &mut outfile).expect("could not copy file to tmp location");
-                
-                let file = File::open("tmp.zip").expect("file does not exist");
-                extract_zip(file, reg);
-            }
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i).expect("Error Accessing file");
+        let mut zipBytes : Vec<u8> = vec![];
+        file.read_to_end(&mut zipBytes).expect("Could not read");
+        if *zipBytes.get(0).unwrap_or(&(0x00 as u8)) == 'd' as u8 && *zipBytes.get(1).unwrap_or(&(0x00 as u8)) == 'e' as u8 && *zipBytes.get(2).unwrap_or(&(0x00 as u8)) == 'x' as u8{
+            println!("\n\n-------\n\nFound DEX {}", file.name());
+            parseDexBuf(zipBytes, reg); 
+        } else if *zipBytes.get(0).unwrap_or(&(0x00 as u8)) == 'P' as u8 && *zipBytes.get(1).unwrap_or(&(0x00 as u8)) == 'K' as u8{
+            println!("\n\n--------\n\nfound APK in apk -> extract it ({})", file.name());
+            let mut outfile = std::fs::File::create("tmp.zip").unwrap();
+            //io::copy(&mut zipBytes, &mut outfile).expect("could not copy file to tmp location");  
+            outfile.write(&zipBytes).expect("Could not write");              
+            let file = File::open("tmp.zip").expect("file does not exist");
+            extract_zip(file, reg);
+        }
     }
 }
 
@@ -190,8 +197,9 @@ fn main(){
         return;
     }
      let mut f = File::open(&args[1]).expect("File must exist");
-
-    if args[1].contains(".apk") || args[1].contains(".zip") {
+     let mut zipBytes : Vec<u8> = vec![];
+     f.read_to_end(&mut zipBytes).expect("Could not read");
+    if  *zipBytes.get(0).unwrap() == 'P' as u8 && *zipBytes.get(1).unwrap() == 'K' as u8 {
         //we have a zip
         println!("Found a zip, extract it");
         println!("\n\nZIP: {}\n\n", args[1]);
