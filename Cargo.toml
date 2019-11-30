@@ -1,6 +1,6 @@
 [package]
 name = "strinxs"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Patrick Amrein <amrein@ubique.ch>"]
 edition = "2018"
 
