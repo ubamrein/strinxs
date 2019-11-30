@@ -8,3 +8,4 @@ edition = "2018"
 leb128 = "*"
 regex = "1"
 zip = "0.5"
+chrono = { version = "0.4", features = ["serde"] }

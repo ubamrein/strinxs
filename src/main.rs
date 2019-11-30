@@ -8,6 +8,7 @@ use regex::Regex;
 use zip::ZipArchive;
 use std::io;
 use std::collections::HashMap;
+use chrono::*;
 
 fn parseDex<R: Read>(mut f : R, reg : &str){
     let mut buffer : Vec<u8> = vec![];
@@ -81,7 +82,7 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
                 let the_string = std::str::from_utf8(&se.dat).unwrap_or("");
                 if re.is_match(the_string) {
                    // println!("Found match: {}", the_string);
-                   let m = Match { value : String::from(the_string) , origin : StringType::UTF8String  };
+                   let m = Match { value : String::from(the_string) , origin : StringType::UTF8String, desc : String::from(""), class : String::from(""), function_name: String::from(""), argc: 0  };
                    match_table.insert(strings.len(), m);
                 }
             }
@@ -113,7 +114,11 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
         let mut proto : Proto = unsafe {std::mem::zeroed()};
         fill_type_from_raw_pointer(&mut proto, &file_contents[offset as usize]);
         //println!("Found prototype: {} {}()", types[proto.return_type_idx as usize], std::str::from_utf8(&strings[proto.shorty_idx as usize].dat).expect("type should be there") );
+        if let Some(entry) = match_table.get_mut(&(proto.shorty_idx as usize)) {
+            entry.origin = StringType::ProtoType;
+        }
         protos.push(proto);
+       
         i += 1;
         offset += std::mem::size_of::<Proto>() as isize;
    }
@@ -121,29 +126,69 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
    offset = config.method_ids_off as isize;
    i = 0;
    let mut methods = vec![];
+   let mut add =1;
    while i < config.method_ids_size {
        let mut method : Method = unsafe {std::mem::zeroed()};
        fill_type_from_raw_pointer(&mut method, &file_contents[offset as usize]);
        //println!("Found method: {}", method.get_description(&types,&strings, &protos));
         if let Some(val) = match_table.get_mut(&(method.name_idx as usize)) {
             val.origin = StringType::Method;
+            val.desc = method.get_description(&types, &strings, &protos);
+        }
+        else if let Some(the_proto_type) = protos.get(method.proto_idx as usize) {
+            if let Some(val) = match_table.get_mut(&(the_proto_type.shorty_idx as usize)) {
+                //val.desc = method.get_description(&types, &strings, &protos);
+                let m = Match { value : String::from("Proto in Method") , origin : StringType::Method, desc : method.get_description(&types, &strings, &protos), class: method.get_classname(&types), function_name : method.get_function_name(&strings), argc : val.value.len() -1 };
+                match_table.insert(strings.len() + add, m);
+                add += 1;
+            }
         }
         methods.push(method);
         i += 1;
         offset += std::mem::size_of::<Method>() as isize;
    }
-
+    let mut frida_script = String::from("Java.perform(function () {\n");
+    let mut haveScript = false;
     for m in match_table {
-        println!("Found Match ({}): {}", m.1.origin.to_string(), m.1.value);
+        println!("Found Match ({}): {} -> {}", m.1.origin.to_string(), m.1.value, m.1.desc.to_string());
+        match m.1.origin {
+            StringType::Method => {
+                let lastPart = m.1.class.split("/").last();
+                if let Some(classPart) = lastPart {
+                    haveScript = true;
+                    let mut arg_str = String::from("");
+                    for i in 0..m.1.argc {
+                        arg_str += &format!("a{},",i);
+                    }
+                    arg_str.pop();
+                    let script = format!("\tvar ret = this.call({}); console.log(ret); return ret;",arg_str);
+                    let mut class_string = String::from(classPart);
+                    class_string =  m.1.class.replace("/","_");
+                    class_string.pop();
+                    frida_script += &format!("\tvar dyn_{} = Java.use(\"{}\");\n", class_string, &(m.1.class.replace("/",".").replace(";",""))[1..]);   
+                    frida_script += &format!("\tdyn_{}.{}.implementation = function({}){{ {} }};\n\n", class_string, m.1.function_name,arg_str, script);
+                }
+                
+            },
+            _ => {
+                continue;
+            }
+        }
+       
+    }
+    frida_script += "\n});";
+    if haveScript {
+        let mut outfile = std::fs::File::create(format!("hook_{}_.js", Utc::now().timestamp_millis())).unwrap();
+        outfile.write(frida_script.as_bytes());
     }
 }
-
 
 enum StringType {
     Unknown,
     Method,
     Type,
-    UTF8String
+    UTF8String,
+    ProtoType
 }
 
 impl ToString for StringType {
@@ -160,6 +205,9 @@ impl ToString for StringType {
             },
             StringType::UTF8String => {
                 String::from("UTF8String")
+            },
+            StringType::ProtoType => {
+                String::from("ProtoType")
             }
         }
     }
@@ -167,7 +215,11 @@ impl ToString for StringType {
 
 struct Match {
     value : String,
-    origin : StringType
+    origin : StringType,
+    desc : String,
+    class : String,
+    function_name : String,
+    argc : usize
 }
 
 fn extract_zip(mut f : File, reg : &str) {
@@ -257,10 +309,19 @@ struct Method {
 impl Method {
     pub fn get_description(&self, types: &Vec<&str>, strings : &Vec<StringEntry>, proto_types : &Vec<Proto>) -> String {
         let class_name  =&types[self.class_idx as usize];
-        let ret_type = std::str::from_utf8(&strings[proto_types[self.proto_idx as usize].return_type_idx as usize].dat).unwrap();
+        let ret_type = types[proto_types[self.proto_idx as usize].return_type_idx as usize];
         let name = std::str::from_utf8(&strings[self.name_idx as usize].dat).unwrap();
         let short_idx = std::str::from_utf8(&strings[proto_types[self.proto_idx as usize].shorty_idx as usize].dat).unwrap();
-        format!("{}: {} {}(...)[{}]", class_name, ret_type, name, short_idx)
+        format!("In Class {}  Return Type: {}  Name: {}(...)[{}]", class_name, ret_type, name,short_idx)
+    }
+
+    pub fn get_classname(&self,types: &Vec<&str>) -> String {
+        let class_name  =&types[self.class_idx as usize];
+        format!("{}",class_name)
+    }
+    pub fn get_function_name(&self,strings : &Vec<StringEntry>) -> String {
+        let name = std::str::from_utf8(&strings[self.name_idx as usize].dat).unwrap();
+        format!("{}", name)
     }
 }
 #[repr(C, packed)]
