@@ -1,4 +1,3 @@
-use std::slice::Iter;
 use std::fs::File;
 use std::io::{Read, Write, Seek};
 use std::mem;
@@ -9,13 +8,13 @@ use std::collections::HashMap;
 use chrono::*;
 use std::io::Cursor;
 
-fn parseDex<R: Read>(mut f : R, reg : &str){
+fn parse_dex<R: Read>(mut f : R, reg : &str){
     let mut buffer : Vec<u8> = vec![];
-    f.read_to_end(&mut buffer);
-    parseDexBuf(buffer, reg);
+    f.read_to_end(&mut buffer).expect("Could not read dex file");
+    parse_dex_buf(buffer, reg);
 }
 
-fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
+fn parse_dex_buf(buffer : Vec<u8>, reg : &str) {
     
     let mut config: DexHeader = unsafe { mem::zeroed() };
     
@@ -146,27 +145,22 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
         offset += std::mem::size_of::<Method>() as isize;
    }
     let mut frida_script = String::from("Java.perform(function () {\n");
-    let mut haveScript = false;
+    let mut have_script = false;
     for m in match_table {
         println!("Found Match ({}): {} -> {}", m.1.origin.to_string(), m.1.value, m.1.desc.to_string());
         match m.1.origin {
             StringType::Method => {
-                let lastPart = m.1.class.split("/").last();
-                if let Some(classPart) = lastPart {
-                    haveScript = true;
-                    let mut arg_str = String::from("");
-                    for i in 0..m.1.argc {
-                        arg_str += &format!("a{},",i);
-                    }
-                    arg_str.pop();
-                    let script = format!("\tvar ret = this.call({}); console.log(ret); return ret;",arg_str);
-                    let mut class_string = String::from(classPart);
-                    class_string =  m.1.class.replace("/","_");
-                    class_string.pop();
-                    frida_script += &format!("\tvar dyn_{} = Java.use(\"{}\");\n", class_string, &(m.1.class.replace("/",".").replace(";",""))[1..]);   
-                    frida_script += &format!("\tdyn_{}.{}.implementation = function({}){{ {} }};\n\n", class_string, m.1.function_name,arg_str, script);
+                have_script = true;
+                let mut arg_str = String::from("");
+                for i in 0..m.1.argc {
+                    arg_str += &format!("a{},",i);
                 }
-                
+                arg_str.pop();
+                let script = format!("\tvar ret = this.call({}); console.log(ret); return ret;",arg_str);
+                let mut class_string =  m.1.class.replace("/","_");
+                class_string.pop();
+                frida_script += &format!("\tvar dyn_{} = Java.use(\"{}\");\n", class_string, &(m.1.class.replace("/",".").replace(";",""))[1..]);   
+                frida_script += &format!("\tdyn_{}.{}.implementation = function({}){{ {} }};\n\n", class_string, m.1.function_name,arg_str, script);
             },
             _ => {
                 continue;
@@ -175,14 +169,13 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
        
     }
     frida_script += "\n});";
-    if haveScript {
+    if have_script {
         let mut outfile = std::fs::File::create(format!("hook_{}_.js", Utc::now().timestamp_millis())).unwrap();
-        outfile.write(frida_script.as_bytes());
+        outfile.write(frida_script.as_bytes()).expect("Could not write frida hook");
     }
 }
 
 enum StringType {
-    Unknown,
     Method,
     Type,
     UTF8String,
@@ -192,9 +185,6 @@ enum StringType {
 impl ToString for StringType {
     fn to_string(&self) -> String {
         match self {
-            StringType::Unknown => {
-                String::from("Unknown")
-            },
             StringType::Method => {
                 String::from("Method")
             },
@@ -224,16 +214,16 @@ fn extract_zip<R: Read+Seek>(f : R, reg : &str) {
     let mut archive = ZipArchive::new(f).expect("Expected a zip file");
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).expect("Error Accessing file");
-        let mut zipBytes : Vec<u8> = vec![];
-        file.read_to_end(&mut zipBytes).expect("Could not read");
+        let mut zip_bytes : Vec<u8> = vec![];
+        file.read_to_end(&mut zip_bytes).expect("Could not read");
 
-        let ptr = zipBytes.as_ptr();
+        let ptr = zip_bytes.as_ptr();
         if check_for_dex_signature(ptr){
             println!("\n\n-------\n\nFound DEX {}", file.name());
-            parseDexBuf(zipBytes, reg); 
+            parse_dex_buf(zip_bytes, reg); 
         } else if check_for_zip_signature(ptr){
             println!("\n\n--------\n\nfound APK in apk -> extract it ({})", file.name());
-            let cursor = Cursor::new(zipBytes);
+            let cursor = Cursor::new(zip_bytes);
             extract_zip(cursor, reg);
         }
     }
@@ -265,9 +255,10 @@ fn main(){
         return;
     }
      let mut f = File::open(&args[1]).expect("File must exist");
-     let mut zipBytes : Vec<u8> = vec![];
-     f.read_to_end(&mut zipBytes).expect("Could not read");
-    if  *zipBytes.get(0).unwrap() == 'P' as u8 && *zipBytes.get(1).unwrap() == 'K' as u8 {
+     let mut zip_bytes : Vec<u8> = vec![];
+     f.read_to_end(&mut zip_bytes).expect("Could not read");
+     let ptr = zip_bytes.as_ptr();
+    if  check_for_zip_signature(ptr) {
         //we have a zip
         println!("Found a zip, extract it");
         println!("\n\nZIP: {}\n\n", args[1]);
@@ -279,9 +270,9 @@ fn main(){
         println!("--------------\n\nZIP FINISHED\n\n");
     } else {
        if args.len() > 2 {
-            parseDex(f, &args[2]);
+            parse_dex(f, &args[2]);
         } else {
-            parseDex(f, "");
+            parse_dex(f, "");
         }
     }
 }
@@ -293,29 +284,28 @@ fn main(){
      }
 }
 
-struct DexFile {
-    string_table : Vec<StringEntry>,
-    type_table : Vec<String>,
-    proto_table : Vec<String>,
-    field_table :Vec<String>,
-    method_table : Vec<String>,
-    class_table : Vec<Class>
-}
+// struct DexFile {
+//     string_table : Vec<StringEntry>,
+//     type_table : Vec<String>,
+//     proto_table : Vec<String>,
+//     field_table :Vec<String>,
+//     method_table : Vec<String>,
+//     class_table : Vec<Class>
+// }
 
+// #[repr(C, packed)]
+// #[derive(Debug)]
+// struct Class {
+//     class_idx : u32,
+//     access_flags : u32,
+//     superclass_idx : u32,
+//     interfaces_off : u32,
+//     source_file_idx : u32,
+//     annotations_off : u32,
+//     class_data_off : u32,
+//     static_values_off : u32
+// }
 #[repr(C, packed)]
-#[derive(Debug)]
-struct Class {
-    class_idx : u32,
-    access_flags : u32,
-    superclass_idx : u32,
-    interfaces_off : u32,
-    source_file_idx : u32,
-    annotations_off : u32,
-    class_data_off : u32,
-    static_values_off : u32
-}
-#[repr(C, packed)]
-#[derive(Debug)]
 struct Method {
     class_idx : u16,
     proto_idx : u16,
@@ -341,7 +331,6 @@ impl Method {
     }
 }
 #[repr(C, packed)]
-#[derive(Debug)]
 struct Proto {
     shorty_idx : u32,
     return_type_idx : u32,
@@ -380,7 +369,6 @@ impl Read for RawPointerRead {
 }
 
 #[repr(C, packed)]
-#[derive(Debug)]
 struct DexHeader {
     magic : [u8;8],
     checksum : u32,
@@ -408,16 +396,16 @@ struct DexHeader {
 }
 
 
-fn decode(buf : &mut Iter<u8>) -> u64 {
-    let mut result : u64 = 0;
-    let mut shift = 0;
-    loop {
-       let byte = buf.next().unwrap();
-        result |= ((0b0111_1111 & byte) << shift) as u64;
-        if 0b1000_0000 & byte == 0 {
-            break;
-        }
-        shift += 7;
-    }
-    result
-}
+// fn decode(buf : &mut Iter<u8>) -> u64 {
+//     let mut result : u64 = 0;
+//     let mut shift = 0;
+//     loop {
+//        let byte = buf.next().unwrap();
+//         result |= ((0b0111_1111 & byte) << shift) as u64;
+//         if 0b1000_0000 & byte == 0 {
+//             break;
+//         }
+//         shift += 7;
+//     }
+//     result
+// }
