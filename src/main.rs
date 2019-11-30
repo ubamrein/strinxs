@@ -1,14 +1,13 @@
 use std::slice::Iter;
 use std::fs::File;
-use std::io::Read;
-use std::io::Write;
+use std::io::{Read, Write, Seek};
 use std::mem;
 use leb128;
 use regex::Regex;
 use zip::ZipArchive;
-use std::io;
 use std::collections::HashMap;
 use chrono::*;
+use std::io::Cursor;
 
 fn parseDex<R: Read>(mut f : R, reg : &str){
     let mut buffer : Vec<u8> = vec![];
@@ -43,7 +42,7 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
     //f.read_to_end(&mut file_contents).expect("Could not read file");
     
     let mut match_table = HashMap::new();
-
+    let re = Regex::new(reg).unwrap();
     let mut i = 0;
     let mut offset =  config.string_ids_off as isize;
     let mut string_table : Vec<u32> = vec![];
@@ -77,7 +76,6 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
         }
 
         if reg != "" {
-            let re = Regex::new(reg).unwrap();
             if se.utf16_size > 0 {
                 let the_string = std::str::from_utf8(&se.dat).unwrap_or("");
                 if re.is_match(the_string) {
@@ -131,7 +129,7 @@ fn parseDexBuf(mut buffer : Vec<u8>, reg : &str) {
        let mut method : Method = unsafe {std::mem::zeroed()};
        fill_type_from_raw_pointer(&mut method, &file_contents[offset as usize]);
        //println!("Found method: {}", method.get_description(&types,&strings, &protos));
-        if let Some(val) = match_table.get_mut(&(method.name_idx as usize)) {
+       if let Some(val) = match_table.get_mut(&(method.name_idx as usize)) {
             val.origin = StringType::Method;
             val.desc = method.get_description(&types, &strings, &protos);
         }
@@ -222,24 +220,42 @@ struct Match {
     argc : usize
 }
 
-fn extract_zip(mut f : File, reg : &str) {
+fn extract_zip<R: Read+Seek>(f : R, reg : &str) {
     let mut archive = ZipArchive::new(f).expect("Expected a zip file");
     for i in 0..archive.len() {
         let mut file = archive.by_index(i).expect("Error Accessing file");
         let mut zipBytes : Vec<u8> = vec![];
         file.read_to_end(&mut zipBytes).expect("Could not read");
-        if *zipBytes.get(0).unwrap_or(&(0x00 as u8)) == 'd' as u8 && *zipBytes.get(1).unwrap_or(&(0x00 as u8)) == 'e' as u8 && *zipBytes.get(2).unwrap_or(&(0x00 as u8)) == 'x' as u8{
+
+        let ptr = zipBytes.as_ptr();
+        if check_for_dex_signature(ptr){
             println!("\n\n-------\n\nFound DEX {}", file.name());
             parseDexBuf(zipBytes, reg); 
-        } else if *zipBytes.get(0).unwrap_or(&(0x00 as u8)) == 'P' as u8 && *zipBytes.get(1).unwrap_or(&(0x00 as u8)) == 'K' as u8{
+        } else if check_for_zip_signature(ptr){
             println!("\n\n--------\n\nfound APK in apk -> extract it ({})", file.name());
-            let mut outfile = std::fs::File::create("tmp.zip").unwrap();
-            //io::copy(&mut zipBytes, &mut outfile).expect("could not copy file to tmp location");  
-            outfile.write(&zipBytes).expect("Could not write");              
-            let file = File::open("tmp.zip").expect("file does not exist");
-            extract_zip(file, reg);
+            let cursor = Cursor::new(zipBytes);
+            extract_zip(cursor, reg);
         }
     }
+}
+
+fn check_for_dex_signature(ptr : *const u8) -> bool{
+    let mut is_dex = true;
+    unsafe {
+        is_dex &= *ptr == ('d' as u8);
+        is_dex &= *(ptr.offset(1)) == ('e' as u8);
+        is_dex &= *(ptr.offset(2)) == ('x' as u8);
+    }
+    return is_dex;
+}
+
+fn check_for_zip_signature(ptr : *const u8) -> bool {
+    let mut is_zip = true;
+    unsafe {
+        is_zip &= *ptr == ('P' as u8);
+        is_zip &= *(ptr.offset(1)) == ('K' as u8);
+    }
+    return is_zip;
 }
 
 fn main(){
