@@ -133,7 +133,7 @@ fn parse_dex_buf(buffer : Vec<u8>, reg : &str) {
             val.desc = method.get_description(&types, &strings, &protos);
             val.class = method.get_classname(&types);
             val.function_name = method.get_function_name(&strings);
-            val.argc = val.value.len() -1 ;
+            val.argc = method.get_prototype(&strings, &protos).len() -1 ;
         }
         else if let Some(the_proto_type) = protos.get(method.proto_idx as usize) {
             if let Some(val) = match_table.get_mut(&(the_proto_type.shorty_idx as usize)) {
@@ -159,7 +159,7 @@ fn parse_dex_buf(buffer : Vec<u8>, reg : &str) {
                     arg_str += &format!("a{},",i);
                 }
                 arg_str.pop();
-                let script = format!("\tvar ret = this.call({}); console.log(ret); return ret;",arg_str);
+                let script = format!("\tvar ret = this.{}({}); console.log(ret); return ret;",m.1.function_name,arg_str);
                 let mut class_string =  m.1.class.replace("/","_");
                 class_string.pop();
                 frida_script += &format!("\tvar dyn_{} = Java.use(\"{}\");\n", class_string, &(m.1.class.replace("/",".").replace(";",""))[1..]);   
@@ -330,6 +330,11 @@ impl Method {
     }
     pub fn get_function_name(&self,strings : &Vec<StringEntry>) -> String {
         let name = std::str::from_utf8(&strings[self.name_idx as usize].dat).unwrap();
+        format!("{}", name)
+    }
+    pub fn get_prototype(&self, strings: &Vec<StringEntry>, proto_types : &Vec<Proto>) -> String{
+        let proto = &proto_types[self.proto_idx as usize];
+        let name = std::str::from_utf8(&strings[proto.shorty_idx as usize].dat).unwrap();
         format!("{}", name)
     }
 }
