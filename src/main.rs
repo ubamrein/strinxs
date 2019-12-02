@@ -131,6 +131,9 @@ fn parse_dex_buf(buffer : Vec<u8>, reg : &str) {
        if let Some(val) = match_table.get_mut(&(method.name_idx as usize)) {
             val.origin = StringType::Method;
             val.desc = method.get_description(&types, &strings, &protos);
+            val.class = method.get_classname(&types);
+            val.function_name = method.get_function_name(&strings);
+            val.argc = val.value.len() -1 ;
         }
         else if let Some(the_proto_type) = protos.get(method.proto_idx as usize) {
             if let Some(val) = match_table.get_mut(&(the_proto_type.shorty_idx as usize)) {
