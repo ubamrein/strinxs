@@ -243,7 +243,17 @@ fn match_unknown_file<T:Read>(mut file : T, file_name: &str, reg : &str) {
     let lossy_string = String::from_utf8_lossy(&zip_bytes);
     if re.is_match(&lossy_string) {
         let matches = re.find_iter(&lossy_string);
-        println!("\n\n--------\n\nfound regex in unsupported type({})", file_name);
+        println!("\n\n--------\n\nfound regex in unsupported type using utf8 encoding({})", file_name);
+        for the_match in matches {
+            println!("Match: {}, from 0x{:x} to 0x{:x}", the_match.as_str(), the_match.start(), the_match.end());
+        }
+    }
+    let u16bytes =unsafe{ 
+         std::slice::from_raw_parts(zip_bytes.as_ptr() as * const u8 as * const u16, zip_bytes.len()/2) };
+    let lossy_string = String::from_utf16_lossy(u16bytes);
+    if re.is_match(&lossy_string) {
+        let matches = re.find_iter(&lossy_string);
+        println!("\n\n--------\n\nfound regex in unsupported type using utf16 encoding({})", file_name);
         for the_match in matches {
             println!("Match: {}, from 0x{:x} to 0x{:x}", the_match.as_str(), the_match.start(), the_match.end());
         }
