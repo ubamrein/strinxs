@@ -37,7 +37,7 @@ fn parse_dex_buf(buffer : Vec<u8>, reg : &str) {
     
     //skip the header
    
-    let mut file_contents = buffer;
+    let file_contents = buffer;
     //f.read_to_end(&mut file_contents).expect("Could not read file");
     
     let mut match_table = HashMap::new();
@@ -55,11 +55,11 @@ fn parse_dex_buf(buffer : Vec<u8>, reg : &str) {
     }
     let mut strings = vec![];
     for entry in string_table {
-        let mut r = RawPointerRead::readable_raw_pointer(&mut file_contents[entry as usize]);
+        let mut r : &[u8] = &file_contents[entry as usize..]; 
         let string_size = leb128::read::unsigned(&mut r).expect("Could not parse leb128") as u32;
         let mut tmp = vec![0;10];
         let lebbytes = leb128::write::unsigned(&mut tmp, string_size as u64).unwrap();
-        let mut r = RawPointerRead::readable_raw_pointer(&mut file_contents[entry as usize + lebbytes as usize]);
+        let mut r = &file_contents[entry as usize + lebbytes as usize..];
         let mut buf : Vec<u8> = Vec::with_capacity(string_size as usize);
         for _ in 0..(string_size) {
             buf.push(0);
@@ -220,7 +220,7 @@ fn extract_zip<R: Read+Seek>(f : R, reg : &str) {
         let mut zip_bytes : Vec<u8> = vec![];
         file.read_to_end(&mut zip_bytes).expect("Could not read");
 
-        let ptr = zip_bytes.as_ptr();
+        let ptr = zip_bytes.as_slice();
         if check_for_dex_signature(ptr){
             println!("\n\n-------\n\nFound DEX {}", file.name());
             parse_dex_buf(zip_bytes, reg); 
@@ -229,26 +229,48 @@ fn extract_zip<R: Read+Seek>(f : R, reg : &str) {
             let cursor = Cursor::new(zip_bytes);
             extract_zip(cursor, reg);
         }
+        else if reg != ""{
+           match_unknown_file(zip_bytes.as_slice(), file.name(), reg);
+        }
     }
 }
 
-fn check_for_dex_signature(ptr : *const u8) -> bool{
-    let mut is_dex = true;
-    unsafe {
-        is_dex &= *ptr == ('d' as u8);
-        is_dex &= *(ptr.offset(1)) == ('e' as u8);
-        is_dex &= *(ptr.offset(2)) == ('x' as u8);
+fn match_unknown_file<T:Read>(mut file : T, file_name: &str, reg : &str) {
+    let re = Regex::new(reg).unwrap();
+    let mut zip_bytes : Vec<u8> = vec![];
+    file.read_to_end(&mut zip_bytes).expect("Could not read");
+    //do our best at just looking at uft stuff
+    let lossy_string = String::from_utf8_lossy(&zip_bytes);
+    if re.is_match(&lossy_string) {
+        let matches = re.find_iter(&lossy_string);
+        println!("\n\n--------\n\nfound regex in unsupported type({})", file_name);
+        for the_match in matches {
+            println!("Match: {}, from 0x{:x} to 0x{:x}", the_match.as_str(), the_match.start(), the_match.end());
+        }
     }
-    return is_dex;
+} 
+
+fn check_for_dex_signature<T:Read>(mut ptr : T) -> bool{
+    let mut buf: [u8;3] = [0,0,0];
+    match ptr.read_exact(&mut buf) {
+        Err(_) => false,
+        _ => {
+            let [a,b,c] = buf;
+            a == 'd' as u8 && b == 'e' as u8 && c == 'x' as u8
+        }
+    }
 }
 
-fn check_for_zip_signature(ptr : *const u8) -> bool {
-    let mut is_zip = true;
-    unsafe {
-        is_zip &= *ptr == ('P' as u8);
-        is_zip &= *(ptr.offset(1)) == ('K' as u8);
+fn check_for_zip_signature<T: Read>(mut ptr : T) -> bool {
+    let mut buf: [u8;2] = [0,0];
+    match ptr.read_exact(&mut buf)
+    {
+        Err(_) => false,
+        _ => {
+            let [a,b] = buf;
+            a == 'P' as u8 && b == 'K' as u8
+        }
     }
-    return is_zip;
 }
 
 fn main(){
@@ -260,7 +282,7 @@ fn main(){
      let mut f = File::open(&args[1]).expect("File must exist");
      let mut zip_bytes : Vec<u8> = vec![];
      f.read_to_end(&mut zip_bytes).expect("Could not read");
-     let ptr = zip_bytes.as_ptr();
+     let ptr = zip_bytes.as_slice();
     if  check_for_zip_signature(ptr) {
         //we have a zip
         println!("Found a zip, extract it");
@@ -271,12 +293,16 @@ fn main(){
             extract_zip(f, "");
         }
         println!("--------------\n\nZIP FINISHED\n\n");
-    } else {
-       if args.len() > 2 {
+    } else if check_for_dex_signature(ptr) {
+        f.seek(std::io::SeekFrom::Start(0)).expect("Could not Seek to beginning");
+        if args.len() > 2 {
             parse_dex(f, &args[2]);
         } else {
             parse_dex(f, "");
         }
+    }
+    else if args.len() > 2 {
+        match_unknown_file(ptr, &args[1], &args[2]);
     }
 }
 
@@ -347,33 +373,6 @@ struct Proto {
 struct StringEntry {
     utf16_size : u32,
     dat : Vec<u8>
-}
-
-struct RawPointerRead {
-    ptr : *mut u8
-}
-
-impl RawPointerRead {
-    pub fn readable_raw_pointer(ptr : &mut u8) -> RawPointerRead{
-        RawPointerRead {
-            ptr
-        }
-    }
-}
-
-impl Read for RawPointerRead {
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        unsafe {
-            std::slice::from_raw_parts(self.ptr, buf.len()).read_exact(buf).expect("could not write buffer");
-            if buf.len() > 0 {
-            }
-            else {
-                println!( "zero sized buffer");
-            }
-            self.ptr = self.ptr.offset(buf.len() as isize);
-        }
-        return Ok(buf.len());
-    }
 }
 
 #[repr(C, packed)]
