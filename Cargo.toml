@@ -7,5 +7,5 @@ edition = "2018"
 [dependencies]
 leb128 = "*"
 regex = "1"
-zip = "0.5"
+zip = "0.6.2"
 chrono = { version = "0.4", features = ["serde"] }
